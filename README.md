@@ -1,8 +1,175 @@
-Base Libs
+RFXLua
 ---
 
-Base libs is a collection of the most essential libraries - vectors, lines, math, etc - for game development in Lua.
-It is developed in active use, *for* active use and will be expanded and refined over time. My primary motives are usability, light weight on both storage and memory, and minimal waste of precious CPU cycles.
+RFXLua is a collection of the most essential libraries - vectors, lines, math, etc - for game development in Lua.
+It is largely out of active use, but may be expanded and refined over time. My primary motives are usability and effective memory management, mainly avoiding GC lag.
+
+Struct.lua
+---
+
+Struct.lua is a simple, robust prototyping implementation optimized for frequent creation and discarding of instances.
+
+By default it provides the following utilities:
+>* (`structname(...)`) instantiation syntax
+>* tiny stack implementation (*legacy feature from early memory management implementation*)
+	>* `lib.stack()` returns a new stack instance
+	>* `stack.push(v)` appends a new item to the top of the stack
+	>* `stack.pop()` removes and returns the most recently added item
+	>* `stack.clear()` removes all elements from the stack
+	>* `stack.c()` returns stack count; more efficient than `#stack`
+>* A linked list double-ended queue used in object pooling (see `structname.pool`)
+	>* `lib.que()` returns a new dequeue instance, the same as a struct's pool
+	>* `pool.push(v)` appends a new item to the back of the que, replacing the current last item
+	>* `pool.pushFirst(v)` pushes a new item to the front of the que, replacing the current first item
+	>* `pool.pop()` removes and returns the first item from the que (typically the oldest item, if added by `pool.push(v)`)
+	>* `pool.popLast()` removes and returns the last item from the que
+	>* `pool.peek()` returns the first item in the que without removing it
+	>* `pool.peekLast()` returns the last item in the que without removing it
+	>* `pool.clear()` clears all entries from the pool and recycles all linked list containers
+	>* `#pool` returns the number of items in the pool (note: based only on push and pop operations. Manual linked list modification will not be accounted for correctly.)
+	>* `for obj, val in pairs(pool) do ... end` obj, in this case, is the container table with members "prev", "next", and "val". Reliably iterates in order.
+>* object disposal with recycling: instance:del()
+>* properties: (`instance.var = val`) and (`val = instance.var`)
+>* struct as instance index metamethod
+
+In order to be as lightweight as possible, inheritance is not implemented.
+When the returned lib is called, a fresh template is generated using the lib.new function
+(which can also be called directly.)
+
+It will apply the template on top of the existing values to the supplied table,
+allowing declaration of a struct within the method call.
+The struct declaration should include a method called "new."
+This is the constructor method. The intended pattern is this:
+
+```lua
+newstruct = struct {
+	new = function(static, this, param1, param2, etc)
+		this.param1 = param1
+		this.param2 = param2
+		this.etc = etc
+	end
+}
+```
+
+The first two arguments are, in order:
+>* The structure table itself, for access to static information ("static")
+>* The new object table ("this")
+The new table instance is automatically pulled from the object pool if one is available.
+Therefore, garbage data may be left over from the old instance.
+To automatically clean this data, simply set either of the following static values to true:
+
+>* `struct.cleanOnConstruct = true`
+>* `struct.cleanOnDispose = true`
+
+*Note that the destructor can also be overridden by including a `struct.del(this)` function.*
+*If included, it will be wrapped and called before the default destructor.*
+
+Although it is not thread safe and requires extra thought, cleanOnConstruct
+defers data removal so that an instance can technically be used after deletion.
+This can be used to ensure that an instance is recycled cleanly after operation,
+avoiding GC lag.
+
+With the structure itself defined, defining methods is simple:
+
+```lua
+function newstruct.method(this, args)
+	-- dostuff
+end
+```
+
+These methods can be called both statically or from an instance,
+so it may be wise to mark methods intended for static usage separately.
+Additionally, the struct can have abstractions for accessing its variables,
+called properties.
+Functions added to the `structname.props` table will be called when
+assignment or indexing of a variable with that name is attempted.
+
+```lua
+function newstruct.props.a(this, value)
+	if value then
+		-- write
+		this.b = value
+	else
+		-- read
+		return this.b
+	end
+end
+```
+
+The following methods are wrapped on declaration:
+>* `struct.new`
+>* `struct.del`
+>* 
+The following methods are overridden on declaration:
+>* `struct.classmeta.__call`
+>* `struct.meta.__index`
+>* `struct.meta.__newindex`
+>* `struct.meta.__close`
+
+>* The metatable is set to struct.meta
+>* struct.prototype and struct.meta.__proto are set to the struct prototype, if they are not otherwise occupied.
+
+---
+
+EXAMPLE: struct declaration and demonstration code
+
+```lua
+local struct = require("RFXLua.struct")
+local structname = struct {
+	staticCount = 0
+	new = function(struct, this, i)
+		this.val = i
+		struct.staticCount = struct.staticCount + 1
+	end,
+	printI = function(this)
+		print(this.val)
+	end,
+	printStatic = function()
+		print("Hello, world!")
+	end,
+	props = {
+		nextI = function(this, val)
+			if val then
+				this.val = val - 1
+			else
+				return this.val + 1
+			end
+		end
+	},
+	meta = {
+		__add = function(a, b)
+			return a.prototype(a.val + b.val)
+		end
+	}
+}
+
+local test = structname(4) -- construct an instance of "structname"
+test:printI() -- call instance method
+print(test.nextI) -- access a property
+test.nextI = 3 -- write to a property
+print(test.nextI)
+print((test + test).val) -- call addition metamethod, creating a new temporary instance
+	-- note that this instance will likely not be recycled correctly in this case. Alternatives and workarounds are advised.
+test:del() -- recycle instance
+```
+
+Final note: in some cases it may be necessary to access the prototype from static methods.
+The original convention is:
+
+```lua
+local structname = struct { ... }
+function structname.doSomething()
+	structname.foo = "bar"
+end
+```
+
+However, if adding methods outside of the prototype declaration is unsatisfactory,
+this works just as well:
+
+```lua
+local structname
+structname = struct { ... }
+```
 
 Vec.lua
 ---
